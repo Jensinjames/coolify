@@ -1,5 +1,5 @@
 <div>
-    <form wire:submit.prevent='submit' class="flex flex-col">
+    <form wire:submit='submit' class="flex flex-col">
         <div class="flex items-center gap-2">
             <h2>Discord</h2>
             <x-forms.button type="submit">
@@ -13,7 +13,7 @@
             @endif
         </div>
         <div class="w-48">
-            <x-forms.checkbox instantSave id="team.discord_enabled" label="Notification Enabled" />
+            <x-forms.checkbox instantSave id="team.discord_enabled" label="Enabled" />
         </div>
         <x-forms.input type="password"
             helper="Generate a webhook in Discord.<br>Example: https://discord.com/api/webhooks/...." required

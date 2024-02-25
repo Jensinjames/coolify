@@ -25,7 +25,7 @@ class Textarea extends Component
         public bool        $readonly = false,
         public string|null $helper = null,
         public bool        $realtimeValidation = false,
-        public string      $defaultClass = "textarea leading-normal bg-coolgray-200 rounded text-white scrollbar disabled:bg-coolgray-200/50 disabled:border-none placeholder:text-coolgray-500 read-only:text-neutral-500 read-only:bg-coolgray-200/50"
+        public string      $defaultClass = "textarea leading-normal bg-coolgray-100 rounded text-white scrollbar disabled:bg-coolgray-200/50 disabled:border-none placeholder:text-coolgray-500 read-only:text-neutral-500 read-only:bg-coolgray-200/50"
     ) {
         //
     }
@@ -38,7 +38,7 @@ class Textarea extends Component
         if (is_null($this->id)) $this->id = new Cuid2(7);
         if (is_null($this->name)) $this->name = $this->id;
 
-        $this->label = Str::title($this->label);
+        // $this->label = Str::title($this->label);
         return view('components.forms.textarea');
     }
 }

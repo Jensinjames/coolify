@@ -2,147 +2,129 @@
 
 namespace App\Jobs;
 
+use App\Actions\Database\StartDatabaseProxy;
+use App\Actions\Proxy\CheckProxy;
 use App\Actions\Proxy\StartProxy;
+use App\Actions\Shared\ComplexStatusCheck;
 use App\Models\ApplicationPreview;
 use App\Models\Server;
 use App\Notifications\Container\ContainerRestarted;
 use App\Notifications\Container\ContainerStopped;
-use App\Notifications\Server\Revived;
-use App\Notifications\Server\Unreachable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeEncrypted;
-use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Str;
 
 class ContainerStatusJob implements ShouldQueue, ShouldBeEncrypted
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $tries = 1;
-    public $timeout = 120;
-
+    public $tries = 4;
+    public function backoff(): int
+    {
+        return isDev() ? 1 : 3;
+    }
+    public function __construct(public Server $server)
+    {
+    }
     public function middleware(): array
     {
-        return [(new WithoutOverlapping($this->server->uuid))->dontRelease()];
+        return [(new WithoutOverlapping($this->server->uuid))];
     }
 
-    public function uniqueId(): string
+    public function uniqueId(): int
     {
         return $this->server->uuid;
     }
 
-    public function __construct(public Server $server)
-    {
-        if (isDev()) {
-            $this->handle();
-        }
-    }
-
     public function handle()
     {
+        $applications = $this->server->applications();
+        $skip_these_applications = collect([]);
+        foreach ($applications as $application) {
+            if ($application->additional_servers->count() > 0) {
+                $skip_these_applications->push($application);
+                ComplexStatusCheck::run($application);
+                $applications = $applications->filter(function ($value, $key) use ($application) {
+                    return $value->id !== $application->id;
+                });
+            }
+        }
+        $applications = $applications->filter(function ($value, $key) use ($skip_these_applications) {
+            return !$skip_these_applications->pluck('id')->contains($value->id);
+        });
+
+        if (!$this->server->isFunctional()) {
+            return 'Server is not ready.';
+        };
         try {
-            ray("checking server status for {$this->server->id}");
-            // ray()->clearAll();
-            $serverUptimeCheckNumber = $this->server->unreachable_count;
-            $serverUptimeCheckNumberMax = 3;
-
-            // ray('checking # ' . $serverUptimeCheckNumber);
-            if ($serverUptimeCheckNumber >= $serverUptimeCheckNumberMax) {
-                if ($this->server->unreachable_email_sent === false) {
-                    ray('Server unreachable, sending notification...');
-                    $this->server->team->notify(new Unreachable($this->server));
-                    $this->server->update(['unreachable_email_sent' => true]);
-                }
-                $this->server->settings()->update([
-                    'is_reachable' => false,
-                ]);
-                $this->server->update([
-                    'unreachable_count' => 0,
-                ]);
-                return;
-            }
-            $result = $this->server->validateConnection();
-            if ($result) {
-                $this->server->settings()->update([
-                    'is_reachable' => true,
-                ]);
-                $this->server->update([
-                    'unreachable_count' => 0,
-                ]);
+            if ($this->server->isSwarm()) {
+                $containers = instant_remote_process(["docker service inspect $(docker service ls -q) --format '{{json .}}'"], $this->server, false);
+                $containerReplicates = instant_remote_process(["docker service ls --format '{{json .}}'"], $this->server, false);
             } else {
-                $serverUptimeCheckNumber++;
-                $this->server->settings()->update([
-                    'is_reachable' => false,
-                ]);
-                $this->server->update([
-                    'unreachable_count' => $serverUptimeCheckNumber,
-                ]);
+                // Precheck for containers
+                $containers = instant_remote_process(["docker container ls -q"], $this->server, false);
+                if (!$containers) {
+                    return;
+                }
+                $containers = instant_remote_process(["docker container inspect $(docker container ls -q) --format '{{json .}}'"], $this->server, false);
+                $containerReplicates = null;
+            }
+            if (is_null($containers)) {
                 return;
             }
-
-            if (data_get($this->server, 'unreachable_email_sent') === true) {
-                ray('Server is reachable again, sending notification...');
-                $this->server->team->notify(new Revived($this->server));
-                $this->server->update(['unreachable_email_sent' => false]);
-            }
-            if (
-                data_get($this->server, 'settings.is_reachable') === false ||
-                data_get($this->server, 'settings.is_usable') === false
-            ) {
-                $this->server->settings()->update([
-                    'is_reachable' => true,
-                    'is_usable' => true
-                ]);
-            }
-            // $this->server->validateDockerEngine(true);
-            $containers = instant_remote_process(["docker container ls -q"], $this->server);
-            if (!$containers) {
-                return;
-            }
-            $containers = instant_remote_process(["docker container inspect $(docker container ls -q) --format '{{json .}}'"], $this->server);
             $containers = format_docker_command_output_to_json($containers);
-            $applications = $this->server->applications();
+            if ($containerReplicates) {
+                $containerReplicates = format_docker_command_output_to_json($containerReplicates);
+                foreach ($containerReplicates as $containerReplica) {
+                    $name = data_get($containerReplica, 'Name');
+                    $containers = $containers->map(function ($container) use ($name, $containerReplica) {
+                        if (data_get($container, 'Spec.Name') === $name) {
+                            $replicas = data_get($containerReplica, 'Replicas');
+                            $running = str($replicas)->explode('/')[0];
+                            $total = str($replicas)->explode('/')[1];
+                            if ($running === $total) {
+                                data_set($container, 'State.Status', 'running');
+                                data_set($container, 'State.Health.Status', 'healthy');
+                            } else {
+                                data_set($container, 'State.Status', 'starting');
+                                data_set($container, 'State.Health.Status', 'unhealthy');
+                            }
+                        }
+                        return $container;
+                    });
+                }
+            }
             $databases = $this->server->databases();
             $services = $this->server->services()->get();
             $previews = $this->server->previews();
-            $this->server->proxyType();
-            /// Check if proxy is running
-            $foundProxyContainer = $containers->filter(function ($value, $key) {
-                return data_get($value, 'Name') === '/coolify-proxy';
-            })->first();
-            if (!$foundProxyContainer) {
-                if ($this->server->isProxyShouldRun()) {
-                    StartProxy::run($this->server, false);
-                    $this->server->team->notify(new ContainerRestarted('coolify-proxy', $this->server));
-                }
-            } else {
-                $this->server->proxy->status = data_get($foundProxyContainer, 'State.Status');
-                $this->server->save();
-                $connectProxyToDockerNetworks = connectProxyToNetworks($this->server);
-                instant_remote_process($connectProxyToDockerNetworks, $this->server, false);
-            }
             $foundApplications = [];
             $foundApplicationPreviews = [];
             $foundDatabases = [];
             $foundServices = [];
 
             foreach ($containers as $container) {
+                if ($this->server->isSwarm()) {
+                    $labels = data_get($container, 'Spec.Labels');
+                    $uuid = data_get($labels, 'coolify.name');
+                } else {
+                    $labels = data_get($container, 'Config.Labels');
+                }
                 $containerStatus = data_get($container, 'State.Status');
                 $containerHealth = data_get($container, 'State.Health.Status', 'unhealthy');
                 $containerStatus = "$containerStatus ($containerHealth)";
-                $labels = data_get($container, 'Config.Labels');
                 $labels = Arr::undot(format_docker_labels_to_json($labels));
-                $labelId = data_get($labels, 'coolify.applicationId');
-                if ($labelId) {
-                    if (str_contains($labelId, '-pr-')) {
-                        $pullRequestId = data_get($labels, 'coolify.pullRequestId');
-                        $applicationId = (int) Str::before($labelId, '-pr-');
+                $applicationId = data_get($labels, 'coolify.applicationId');
+                if ($applicationId) {
+                    $pullRequestId = data_get($labels, 'coolify.pullRequestId');
+                    if ($pullRequestId) {
+                        if (str($applicationId)->contains('-')) {
+                            $applicationId = str($applicationId)->before('-');
+                        }
                         $preview = ApplicationPreview::where('application_id', $applicationId)->where('pull_request_id', $pullRequestId)->first();
                         if ($preview) {
                             $foundApplicationPreviews[] = $preview->id;
@@ -154,7 +136,7 @@ class ContainerStatusJob implements ShouldQueue, ShouldBeEncrypted
                             //Notify user that this container should not be there.
                         }
                     } else {
-                        $application = $applications->where('id', $labelId)->first();
+                        $application = $applications->where('id', $applicationId)->first();
                         if ($application) {
                             $foundApplications[] = $application->id;
                             $statusFromDb = $application->status;
@@ -170,14 +152,31 @@ class ContainerStatusJob implements ShouldQueue, ShouldBeEncrypted
                     if ($uuid) {
                         $database = $databases->where('uuid', $uuid)->first();
                         if ($database) {
+                            $isPublic = data_get($database, 'is_public');
                             $foundDatabases[] = $database->id;
                             $statusFromDb = $database->status;
                             if ($statusFromDb !== $containerStatus) {
                                 $database->update(['status' => $containerStatus]);
                             }
+                            if ($isPublic) {
+                                $foundTcpProxy = $containers->filter(function ($value, $key) use ($uuid) {
+                                    if ($this->server->isSwarm()) {
+                                        return data_get($value, 'Spec.Name') === "coolify-proxy_$uuid";
+                                    } else {
+                                        return data_get($value, 'Name') === "/$uuid-proxy";
+                                    }
+                                })->first();
+                                if (!$foundTcpProxy) {
+                                    StartDatabaseProxy::run($database);
+                                    $this->server->team?->notify(new ContainerRestarted("TCP Proxy for {$database->name}", $this->server));
+                                }
+                            }
                         } else {
                             // Notify user that this container should not be there.
                         }
+                    }
+                    if (data_get($container, 'Name') === '/coolify-db') {
+                        $foundDatabases[] = 0;
                     }
                 }
                 $serviceLabelId = data_get($labels, 'coolify.serviceId');
@@ -224,24 +223,29 @@ class ContainerStatusJob implements ShouldQueue, ShouldBeEncrypted
             }
             $exitedServices = $exitedServices->unique('id');
             foreach ($exitedServices as $exitedService) {
-                if ($exitedService->status === 'exited') {
+                if (str($exitedService->status)->startsWith('exited')) {
                     continue;
                 }
                 $name = data_get($exitedService, 'name');
                 $fqdn = data_get($exitedService, 'fqdn');
-                $containerName = $name ? "$name ($fqdn)" : $fqdn;
-                $project = data_get($service, 'environment.project');
-                $environment = data_get($service, 'environment');
+                $containerName = $name ? "$name, available at $fqdn" : $fqdn;
+                $projectUuid = data_get($service, 'environment.project.uuid');
+                $serviceUuid = data_get($service, 'uuid');
+                $environmentName = data_get($service, 'environment.name');
 
-                $url =  base_url() . '/project/' . $project->uuid . "/" . $environment->name . "/service/" . $service->uuid;
-                $this->server->team->notify(new ContainerStopped($containerName, $this->server, $url));
+                if ($projectUuid && $serviceUuid && $environmentName) {
+                    $url =  base_url() . '/project/' . $projectUuid . "/" . $environmentName . "/service/" . $serviceUuid;
+                } else {
+                    $url = null;
+                }
+                $this->server->team?->notify(new ContainerStopped($containerName, $this->server, $url));
                 $exitedService->update(['status' => 'exited']);
             }
 
             $notRunningApplications = $applications->pluck('id')->diff($foundApplications);
             foreach ($notRunningApplications as $applicationId) {
                 $application = $applications->where('id', $applicationId)->first();
-                if ($application->status === 'exited') {
+                if (str($application->status)->startsWith('exited')) {
                     continue;
                 }
                 $application->update(['status' => 'exited']);
@@ -251,17 +255,22 @@ class ContainerStatusJob implements ShouldQueue, ShouldBeEncrypted
 
                 $containerName = $name ? "$name ($fqdn)" : $fqdn;
 
-                $project = data_get($application, 'environment.project');
-                $environment = data_get($application, 'environment');
+                $projectUuid = data_get($application, 'environment.project.uuid');
+                $applicationUuid = data_get($application, 'uuid');
+                $environment = data_get($application, 'environment.name');
 
-                $url =  base_url() . '/project/' . $project->uuid . "/" . $environment->name . "/application/" . $application->uuid;
+                if ($projectUuid && $applicationUuid && $environment) {
+                    $url =  base_url() . '/project/' . $projectUuid . "/" . $environment . "/application/" . $applicationUuid;
+                } else {
+                    $url = null;
+                }
 
-                $this->server->team->notify(new ContainerStopped($containerName, $this->server, $url));
+                $this->server->team?->notify(new ContainerStopped($containerName, $this->server, $url));
             }
             $notRunningApplicationPreviews = $previews->pluck('id')->diff($foundApplicationPreviews);
             foreach ($notRunningApplicationPreviews as $previewId) {
                 $preview = $previews->where('id', $previewId)->first();
-                if ($preview->status === 'exited') {
+                if (str($preview->status)->startsWith('exited')) {
                     continue;
                 }
                 $preview->update(['status' => 'exited']);
@@ -271,16 +280,22 @@ class ContainerStatusJob implements ShouldQueue, ShouldBeEncrypted
 
                 $containerName = $name ? "$name ($fqdn)" : $fqdn;
 
-                $project = data_get($preview, 'application.environment.project');
-                $environment = data_get($preview, 'application.environment');
+                $projectUuid = data_get($preview, 'application.environment.project.uuid');
+                $environmentName = data_get($preview, 'application.environment.name');
+                $applicationUuid = data_get($preview, 'application.uuid');
 
-                $url =  base_url() . '/project/' . $project->uuid . "/" . $environment->name . "/application/" . $preview->application->uuid;
-                $this->server->team->notify(new ContainerStopped($containerName, $this->server, $url));
+                if ($projectUuid && $applicationUuid && $environmentName) {
+                    $url =  base_url() . '/project/' . $projectUuid . "/" . $environmentName . "/application/" . $applicationUuid;
+                } else {
+                    $url = null;
+                }
+
+                $this->server->team?->notify(new ContainerStopped($containerName, $this->server, $url));
             }
             $notRunningDatabases = $databases->pluck('id')->diff($foundDatabases);
             foreach ($notRunningDatabases as $database) {
                 $database = $databases->where('id', $database)->first();
-                if ($database->status === 'exited') {
+                if (str($database->status)->startsWith('exited')) {
                     continue;
                 }
                 $database->update(['status' => 'exited']);
@@ -290,14 +305,45 @@ class ContainerStatusJob implements ShouldQueue, ShouldBeEncrypted
 
                 $containerName = $name;
 
-                $project = data_get($database, 'environment.project');
-                $environment = data_get($database, 'environment');
+                $projectUuid = data_get($database, 'environment.project.uuid');
+                $environmentName = data_get($database, 'environment.name');
+                $databaseUuid = data_get($database, 'uuid');
 
-                $url =  base_url() . '/project/' . $project->uuid . "/" . $environment->name . "/database/" . $database->uuid;
-                $this->server->team->notify(new ContainerStopped($containerName, $this->server, $url));
+                if ($projectUuid && $databaseUuid && $environmentName) {
+                    $url = base_url() . '/project/' . $projectUuid . "/" . $environmentName . "/database/" . $databaseUuid;
+                } else {
+                    $url = null;
+                }
+                $this->server->team?->notify(new ContainerStopped($containerName, $this->server, $url));
+            }
+
+            // Check if proxy is running
+            $this->server->proxyType();
+            $foundProxyContainer = $containers->filter(function ($value, $key) {
+                if ($this->server->isSwarm()) {
+                    return data_get($value, 'Spec.Name') === 'coolify-proxy_traefik';
+                } else {
+                    return data_get($value, 'Name') === '/coolify-proxy';
+                }
+            })->first();
+            if (!$foundProxyContainer) {
+                try {
+                    $shouldStart = CheckProxy::run($this->server);
+                    if ($shouldStart) {
+                        StartProxy::run($this->server, false);
+                        $this->server->team?->notify(new ContainerRestarted('coolify-proxy', $this->server));
+                    }
+                } catch (\Throwable $e) {
+                    ray($e);
+                }
+            } else {
+                $this->server->proxy->status = data_get($foundProxyContainer, 'State.Status');
+                $this->server->save();
+                $connectProxyToDockerNetworks = connectProxyToNetworks($this->server);
+                instant_remote_process($connectProxyToDockerNetworks, $this->server, false);
             }
         } catch (\Throwable $e) {
-            send_internal_notification('ContainerStatusJob failed with: ' . $e->getMessage());
+            send_internal_notification("ContainerStatusJob failed on ({$this->server->id}) with: " . $e->getMessage());
             ray($e->getMessage());
             return handleError($e);
         }

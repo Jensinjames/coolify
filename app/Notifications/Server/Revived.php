@@ -18,7 +18,7 @@ class Revived extends Notification implements ShouldQueue
     public $tries = 1;
     public function __construct(public Server $server)
     {
-        if ($this->server->unreachable_email_sent === false) {
+        if ($this->server->unreachable_notification_sent === false) {
             return;
         }
     }
@@ -54,7 +54,7 @@ class Revived extends Notification implements ShouldQueue
 
     public function toDiscord(): string
     {
-        $message = "Coolify:  Server '{$this->server->name}' revived. All automations & integrations are turned on again!";
+        $message = "Coolify: Server '{$this->server->name}' revived. All automations & integrations are turned on again!";
         return $message;
     }
     public function toTelegram(): array

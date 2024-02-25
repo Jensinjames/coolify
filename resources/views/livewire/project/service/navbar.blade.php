@@ -1,4 +1,4 @@
-<div x-init="$wire.checkStatus">
+<div>
     <livewire:project.service.modal />
     <h1>Configuration</h1>
     <x-resources.breadcrumbs :resource="$service" :parameters="$parameters" />

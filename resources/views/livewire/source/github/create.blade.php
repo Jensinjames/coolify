@@ -1,5 +1,5 @@
 <div>
-    <form wire:submit.prevent='createGitHubApp' class="flex flex-col">
+    <form wire:submit='createGitHubApp' class="flex flex-col">
         <h2>GitHub App</h2>
         <div class="flex gap-2">
             <x-forms.input id="name" label="Name" required />
@@ -12,13 +12,13 @@
         </div>
         <div class="flex gap-2">
             <x-forms.input id="custom_user" label="Custom Git User" required />
-            <x-forms.input id="custom_port" label="Custom Git Port" required />
+            <x-forms.input id="custom_port" type="number" label="Custom Git Port" required />
         </div>
         @if (!isCloud())
             <x-forms.checkbox class="pt-2" id="is_system_wide" label="System Wide" />
         @endif
         <x-forms.button class="mt-4" type="submit">
-            Save New Source
+            Continue
         </x-forms.button>
     </form>
 </div>

@@ -109,7 +109,7 @@ function isPaddle()
 function getStripeCustomerPortalSession(Team $team)
 {
     Stripe::setApiKey(config('subscription.stripe_api_key'));
-    $return_url = route('team.index');
+    $return_url = route('subscription.show');
     $stripe_customer_id = data_get($team,'subscription.stripe_customer_id');
     if (!$stripe_customer_id) {
         return null;
@@ -123,16 +123,12 @@ function getStripeCustomerPortalSession(Team $team)
 function allowedPathsForUnsubscribedAccounts()
 {
     return [
-        'subscription',
+        'subscription/new',
         'login',
         'logout',
         'waitlist',
         'force-password-reset',
-        'livewire/message/force-password-reset',
-        'livewire/message/check-license',
-        'livewire/message/switch-team',
-        'livewire/message/subscription.pricing-plans',
-        'livewire/message/help'
+        'livewire/update'
     ];
 }
 function allowedPathsForBoardingAccounts()
@@ -140,15 +136,14 @@ function allowedPathsForBoardingAccounts()
     return [
         ...allowedPathsForUnsubscribedAccounts(),
         'boarding',
-        'livewire/message/boarding.index',
-        'livewire/message/activity-monitor'
+        'livewire/update'
     ];
 }
 function allowedPathsForInvalidAccounts() {
     return [
         'logout',
         'verify',
-        'livewire/message/verify-email',
-        'livewire/message/help'
+        'force-password-reset',
+        'livewire/update'
     ];
 }

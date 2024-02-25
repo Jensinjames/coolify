@@ -2,8 +2,8 @@
 
 namespace App\Actions\Database;
 
-use App\Models\Server;
 use App\Models\StandaloneRedis;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\Yaml\Yaml;
 use Lorisleiva\Actions\Concerns\AsAction;
@@ -17,7 +17,7 @@ class StartRedis
     public string $configuration_dir;
 
 
-    public function handle(Server $server, StandaloneRedis $database)
+    public function handle(StandaloneRedis $database)
     {
         $this->database = $database;
 
@@ -27,7 +27,7 @@ class StartRedis
         $this->configuration_dir = database_configuration_dir() . '/' . $container_name;
 
         $this->commands = [
-            "echo '####### Starting {$database->name}.'",
+            "echo 'Starting {$database->name}.'",
             "mkdir -p $this->configuration_dir",
         ];
 
@@ -66,8 +66,7 @@ class StartRedis
                     'memswap_limit' => $this->database->limits_memory_swap,
                     'mem_swappiness' => $this->database->limits_memory_swappiness,
                     'mem_reservation' => $this->database->limits_memory_reservation,
-                    'cpus' => $this->database->limits_cpus,
-                    'cpuset' => $this->database->limits_cpuset,
+                    'cpus' => (float) $this->database->limits_cpus,
                     'cpu_shares' => $this->database->limits_cpu_shares,
                 ]
             ],
@@ -79,6 +78,19 @@ class StartRedis
                 ]
             ]
         ];
+        if (!is_null($this->database->limits_cpuset)) {
+            data_set($docker_compose, "services.{$container_name}.cpuset", $this->database->limits_cpuset);
+        }
+        if ($this->database->destination->server->isLogDrainEnabled() && $this->database->isLogDrainEnabled()) {
+            $docker_compose['services'][$container_name]['logging'] = [
+                'driver' => 'fluentd',
+                'options' => [
+                    'fluentd-address' => "tcp://127.0.0.1:24224",
+                    'fluentd-async' => "true",
+                    'fluentd-sub-second-precision' => "true",
+                ]
+            ];
+        }
         if (count($this->database->ports_mappings_array) > 0) {
             $docker_compose['services'][$container_name]['ports'] = $this->database->ports_mappings_array;
         }
@@ -95,16 +107,18 @@ class StartRedis
                 'target' => '/usr/local/etc/redis/redis.conf',
                 'read_only' => true,
             ];
-            $docker_compose['services'][$container_name]['command'] =  $startCommand . ' /usr/local/etc/redis/redis.conf';
+            $docker_compose['services'][$container_name]['command'] = "redis-server /usr/local/etc/redis/redis.conf --requirepass {$this->database->redis_password} --appendonly yes";
         }
         $docker_compose = Yaml::dump($docker_compose, 10);
         $docker_compose_base64 = base64_encode($docker_compose);
         $this->commands[] = "echo '{$docker_compose_base64}' | base64 -d > $this->configuration_dir/docker-compose.yml";
         $readme = generate_readme_file($this->database->name, now());
         $this->commands[] = "echo '{$readme}' > $this->configuration_dir/README.md";
+        $this->commands[] = "echo 'Pulling {$database->image} image.'";
+        $this->commands[] = "docker compose -f $this->configuration_dir/docker-compose.yml pull";
         $this->commands[] = "docker compose -f $this->configuration_dir/docker-compose.yml up -d";
-        $this->commands[] = "echo '####### {$database->name} started.'";
-        return remote_process($this->commands, $server);
+        $this->commands[] = "echo 'Database started.'";
+        return remote_process($this->commands, $database->destination->server, callEventOnFinish: 'DatabaseStatusChanged');
     }
 
     private function generate_local_persistent_volumes()
@@ -137,7 +151,7 @@ class StartRedis
     {
         $environment_variables = collect();
         foreach ($this->database->runtime_environment_variables as $env) {
-            $environment_variables->push("$env->key=$env->value");
+            $environment_variables->push("$env->key=$env->real_value");
         }
 
         if ($environment_variables->filter(fn ($env) => Str::of($env)->contains('REDIS_PASSWORD'))->isEmpty()) {
@@ -152,9 +166,9 @@ class StartRedis
             return;
         }
         $filename = 'redis.conf';
-        $content = $this->database->redis_conf;
-        $content_base64 = base64_encode($content);
-        $this->commands[] = "echo '{$content_base64}' | base64 -d > $this->configuration_dir/{$filename}";
-
+        Storage::disk('local')->put("tmp/redis.conf_{$this->database->uuid}", $this->database->redis_conf);
+        $path = Storage::path("tmp/redis.conf_{$this->database->uuid}");
+        instant_scp($path, "{$this->configuration_dir}/{$filename}", $this->database->destination->server);
+        Storage::disk('local')->delete("tmp/redis.conf_{$this->database->uuid}");
     }
 }

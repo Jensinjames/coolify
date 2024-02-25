@@ -1,5 +1,5 @@
 <div>
-    <form wire:submit.prevent="submit" class="flex flex-col gap-2">
+    <form wire:submit="submit" class="flex flex-col gap-2">
         <div class="flex items-center gap-2">
             <h2>General</h2>
             <x-forms.button type="submit">
@@ -21,8 +21,22 @@
                     label="Public Port" />
                 <x-forms.checkbox instantSave id="database.is_public" label="Accessible over the internet" />
             </div>
-            <x-forms.input label="Redis URL" type="password" readonly wire:model="db_url" />
+            <x-forms.input label="Redis URL (internal)"
+                helper="If you change the user/password/port, this could be different. This is with the default values."
+                type="password" readonly wire:model="db_url" />
+            @if ($db_url_public)
+                <x-forms.input label="Redis URL (public)"
+                    helper="If you change the user/password/port, this could be different. This is with the default values."
+                    type="password" readonly wire:model="db_url_public" />
+            @endif
         </div>
-        <x-forms.textarea helper="<a target='_blank' class='text-white underline' href='https://raw.githubusercontent.com/redis/redis/7.2/redis.conf'>Redis Default Configuration</a>" label="Custom Redis Configuration" rows="10" id="database.redis_conf" />
+        <x-forms.textarea
+            helper="<a target='_blank' class='text-white underline' href='https://raw.githubusercontent.com/redis/redis/7.2/redis.conf'>Redis Default Configuration</a>"
+            label="Custom Redis Configuration" rows="10" id="database.redis_conf" />
+        <h3 class="pt-4">Advanced</h3>
+        <div class="flex flex-col">
+            <x-forms.checkbox helper="Drain logs to your configured log drain endpoint in your Server settings."
+                instantSave="instantSaveAdvanced" id="database.is_log_drain_enabled" label="Drain Logs" />
+        </div>
     </form>
 </div>

@@ -4,7 +4,9 @@ namespace App\Exceptions;
 
 use App\Models\InstanceSettings;
 use App\Models\User;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use RuntimeException;
 use Sentry\Laravel\Integration;
 use Sentry\State\Scope;
 use Throwable;
@@ -40,6 +42,13 @@ class Handler extends ExceptionHandler
     ];
     private InstanceSettings $settings;
 
+    protected function unauthenticated($request, AuthenticationException $exception)
+    {
+        if ($request->is('api/*') || $request->expectsJson() || $this->shouldReturnJson($request, $exception)) {
+            return response()->json(['message' => $exception->getMessage()], 401);
+        }
+        return redirect()->guest($exception->redirectTo() ?? route('login'));
+    }
     /**
      * Register the exception handling callbacks for the application.
      */
@@ -47,6 +56,9 @@ class Handler extends ExceptionHandler
     {
         $this->reportable(function (Throwable $e) {
             if (isDev()) {
+                // return;
+            }
+            if ($e instanceof RuntimeException) {
                 return;
             }
             $this->settings = InstanceSettings::get();
@@ -65,6 +77,7 @@ class Handler extends ExceptionHandler
                     );
                 }
             );
+            ray('reporting to sentry');
             Integration::captureUnhandledException($e);
         });
     }

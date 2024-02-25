@@ -24,6 +24,7 @@ function remote_process(
     ?string $type_uuid = null,
     ?Model  $model = null,
     bool    $ignore_errors = false,
+    $callEventOnFinish = null
 ): Activity {
     if (is_null($type)) {
         $type = ActivityTypes::INLINE->value;
@@ -47,18 +48,12 @@ function remote_process(
             type: $type,
             type_uuid: $type_uuid,
             model: $model,
-            ignore_errors: $ignore_errors
+            ignore_errors: $ignore_errors,
+            call_event_on_finish: $callEventOnFinish,
         ),
     ])();
 }
 
-// function removePrivateKeyFromSshAgent(Server $server)
-// {
-//     if (data_get($server, 'privateKey.private_key') === null) {
-//         throw new \Exception("Server {$server->name} does not have a private key");
-//     }
-//     // processWithEnv()->run("echo '{$server->privateKey->private_key}' | ssh-add -d -");
-// }
 function savePrivateKeyToFs(Server $server)
 {
     if (data_get($server, 'privateKey.private_key') === null) {
@@ -72,7 +67,48 @@ function savePrivateKeyToFs(Server $server)
     return $location;
 }
 
-function generateSshCommand(Server $server, string $command, bool $isMux = true)
+function generateScpCommand(Server $server, string $source, string $dest)
+{
+    $user = $server->user;
+    $port = $server->port;
+    $privateKeyLocation = savePrivateKeyToFs($server);
+    $timeout = config('constants.ssh.command_timeout');
+    $connectionTimeout = config('constants.ssh.connection_timeout');
+    $serverInterval = config('constants.ssh.server_interval');
+
+    $scp_command = "timeout $timeout scp ";
+    $scp_command .= "-i {$privateKeyLocation} "
+        . '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '
+        . '-o PasswordAuthentication=no '
+        . "-o ConnectTimeout=$connectionTimeout "
+        . "-o ServerAliveInterval=$serverInterval "
+        . '-o RequestTTY=no '
+        . '-o LogLevel=ERROR '
+        . "-P {$port} "
+        . "{$source} "
+        . "{$user}@{$server->ip}:{$dest}";
+
+    return $scp_command;
+}
+function instant_scp(string $source, string $dest, Server $server, $throwError = true)
+{
+    $timeout = config('constants.ssh.command_timeout');
+    $scp_command = generateScpCommand($server, $source, $dest);
+    $process = Process::timeout($timeout)->run($scp_command);
+    $output = trim($process->output());
+    $exitCode = $process->exitCode();
+    if ($exitCode !== 0) {
+        if (!$throwError) {
+            return null;
+        }
+        return excludeCertainErrors($process->errorOutput(), $exitCode);
+    }
+    if ($output === 'null') {
+        $output = null;
+    }
+    return $output;
+}
+function generateSshCommand(Server $server, string $command)
 {
     $user = $server->user;
     $port = $server->port;
@@ -84,7 +120,7 @@ function generateSshCommand(Server $server, string $command, bool $isMux = true)
     $delimiter = 'EOF-COOLIFY-SSH';
     $ssh_command = "timeout $timeout ssh ";
 
-    if ($isMux && config('coolify.mux_enabled')) {
+    if (config('coolify.mux_enabled') && config('coolify.is_windows_docker_desktop') == false) {
         $ssh_command .= '-o ControlMaster=auto -o ControlPersist=1m -o ControlPath=/var/www/html/storage/app/ssh/mux/%h_%p_%r ';
     }
     if (data_get($server, 'settings.is_cloudflare_tunnel')) {
@@ -123,6 +159,9 @@ function instant_remote_process(Collection|array $command, Server $server, $thro
         }
         return excludeCertainErrors($process->errorOutput(), $exitCode);
     }
+    if ($output === 'null') {
+        $output = null;
+    }
     return $output;
 }
 function excludeCertainErrors(string $errorOutput, ?int $exitCode = null)
@@ -151,6 +190,7 @@ function decode_remote_command_output(?ApplicationDeploymentQueue $application_d
     if (is_null($application_deployment_queue)) {
         return collect([]);
     }
+    // ray(data_get($application_deployment_queue, 'logs'));
     try {
         $decoded = json_decode(
             data_get($application_deployment_queue, 'logs'),
@@ -160,76 +200,33 @@ function decode_remote_command_output(?ApplicationDeploymentQueue $application_d
     } catch (\JsonException $exception) {
         return collect([]);
     }
+    // ray($decoded );
     $formatted = collect($decoded);
     if (!$is_debug_enabled) {
         $formatted = $formatted->filter(fn ($i) => $i['hidden'] === false ?? false);
     }
     $formatted = $formatted
-        ->sortBy(fn ($i) => $i['order'])
+        ->sortBy(fn ($i) => data_get($i, 'order'))
         ->map(function ($i) {
-            $i['timestamp'] = Carbon::parse($i['timestamp'])->format('Y-M-d H:i:s.u');
+            data_set($i, 'timestamp', Carbon::parse(data_get($i, 'timestamp'))->format('Y-M-d H:i:s.u'));
             return $i;
         });
-
     return $formatted;
 }
-
-function refresh_server_connection(PrivateKey $private_key)
+function remove_iip($text)
 {
+    $text = preg_replace('/x-access-token:.*?(?=@)/', "x-access-token:" . REDACTED, $text);
+    return preg_replace('/\x1b\[[0-9;]*m/', '', $text);
+}
+function refresh_server_connection(?PrivateKey $private_key = null)
+{
+    if (is_null($private_key)) {
+        return;
+    }
     foreach ($private_key->servers as $server) {
         Storage::disk('ssh-mux')->delete($server->muxFilename());
     }
 }
-
-// function validateServer(Server $server, bool $throwError = false)
-// {
-//     try {
-//         $uptime = instant_remote_process(['uptime'], $server, $throwError);
-//         if (!$uptime) {
-//             $server->settings->is_reachable = false;
-//             $server->team->notify(new Unreachable($server));
-//             $server->unreachable_email_sent = true;
-//             $server->save();
-//             return [
-//                 "uptime" => null,
-//                 "dockerVersion" => null,
-//             ];
-//         }
-//         $server->settings->is_reachable = true;
-//         instant_remote_process(["docker ps"], $server, $throwError);
-//         $dockerVersion = instant_remote_process(["docker version|head -2|grep -i version| awk '{print $2}'"], $server, $throwError);
-//         if (!$dockerVersion) {
-//             $dockerVersion = null;
-//             return [
-//                 "uptime" => $uptime,
-//                 "dockerVersion" => null,
-//             ];
-//         }
-//         $dockerVersion = checkMinimumDockerEngineVersion($dockerVersion);
-//         if (is_null($dockerVersion)) {
-//             $server->settings->is_usable = false;
-//         } else {
-//             $server->settings->is_usable = true;
-//             if (data_get($server, 'unreachable_email_sent') === true) {
-//                 $server->team->notify(new Revived($server));
-//                 $server->unreachable_email_sent = false;
-//                 $server->save();
-//             }
-//         }
-//         return [
-//             "uptime" => $uptime,
-//             "dockerVersion" => $dockerVersion,
-//         ];
-//     } catch (\Throwable $e) {
-//         $server->settings->is_reachable = false;
-//         $server->settings->is_usable = false;
-//         throw $e;
-//     } finally {
-//         if (data_get($server, 'settings')) {
-//             $server->settings->save();
-//         }
-//     }
-// }
 
 function checkRequiredCommands(Server $server)
 {

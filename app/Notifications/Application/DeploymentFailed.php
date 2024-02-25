@@ -38,7 +38,7 @@ class DeploymentFailed extends Notification implements ShouldQueue
         if (Str::of($this->fqdn)->explode(',')->count() > 1) {
             $this->fqdn = Str::of($this->fqdn)->explode(',')->first();
         }
-        $this->deployment_url = base_url() . "/project/{$this->project_uuid}/{$this->environment_name}/application/{$this->application->uuid}/deployment/{$this->deployment_uuid}";
+        $this->deployment_url = base_url() . "/project/{$this->project_uuid}/" . urlencode($this->environment_name) . "/application/{$this->application->uuid}/deployment/{$this->deployment_uuid}";
     }
 
     public function via(object $notifiable): array
@@ -84,11 +84,14 @@ class DeploymentFailed extends Notification implements ShouldQueue
         } else {
             $message = 'Coolify: Deployment failed of **' . $this->application_name . '** (' . $this->fqdn . '): ';
         }
+        $buttons[] = [
+            "text" => "Deployment logs",
+            "url" => $this->deployment_url
+        ];
         return [
             "message" => $message,
             "buttons" => [
-                "text" => "View Deployment Logs",
-                "url" => $this->deployment_url
+                ...$buttons
             ],
         ];
     }

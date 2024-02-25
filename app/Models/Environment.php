@@ -7,21 +7,25 @@ use Illuminate\Database\Eloquent\Model;
 
 class Environment extends Model
 {
-    protected $fillable = [
-        'name',
-        'project_id',
-    ];
-
-    public function can_delete_environment()
+    protected $guarded = [];
+    public function isEmpty()
     {
-        return $this->applications()->count() == 0 && $this->redis()->count() == 0 && $this->postgresqls()->count() == 0 && $this->services()->count() == 0;
+        return $this->applications()->count() == 0 &&
+            $this->redis()->count() == 0 &&
+            $this->postgresqls()->count() == 0 &&
+            $this->mysqls()->count() == 0 &&
+            $this->mariadbs()->count() == 0 &&
+            $this->mongodbs()->count() == 0 &&
+            $this->services()->count() == 0;
     }
 
+    public function environment_variables() {
+        return $this->hasMany(SharedEnvironmentVariable::class);
+    }
     public function applications()
     {
         return $this->hasMany(Application::class);
     }
-
     public function postgresqls()
     {
         return $this->hasMany(StandalonePostgresql::class);
@@ -30,12 +34,27 @@ class Environment extends Model
     {
         return $this->hasMany(StandaloneRedis::class);
     }
+    public function mongodbs()
+    {
+        return $this->hasMany(StandaloneMongodb::class);
+    }
+    public function mysqls()
+    {
+        return $this->hasMany(StandaloneMysql::class);
+    }
+    public function mariadbs()
+    {
+        return $this->hasMany(StandaloneMariadb::class);
+    }
 
     public function databases()
     {
         $postgresqls = $this->postgresqls;
         $redis = $this->redis;
-        return $postgresqls->concat($redis);
+        $mongodbs = $this->mongodbs;
+        $mysqls = $this->mysqls;
+        $mariadbs = $this->mariadbs;
+        return $postgresqls->concat($redis)->concat($mongodbs)->concat($mysqls)->concat($mariadbs);
     }
 
     public function project()

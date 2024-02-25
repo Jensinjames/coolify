@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Notifications\Channels\SendsEmail;
 use App\Notifications\TransactionalEmails\ResetPassword as TransactionalEmailsResetPassword;
+use DateTimeInterface;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -14,6 +15,8 @@ use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\URL;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 use Laravel\Sanctum\HasApiTokens;
+use Laravel\Sanctum\NewAccessToken;
+use Illuminate\Support\Str;
 
 class User extends Authenticatable implements SendsEmail
 {
@@ -47,7 +50,25 @@ class User extends Authenticatable implements SendsEmail
             $user->teams()->attach($new_team, ['role' => 'owner']);
         });
     }
+    public function createToken(string $name, array $abilities = ['*'], DateTimeInterface $expiresAt = null)
+    {
+        $plainTextToken = sprintf(
+            '%s%s%s',
+            config('sanctum.token_prefix', ''),
+            $tokenEntropy = Str::random(40),
+            hash('crc32b', $tokenEntropy)
+        );
 
+        $token = $this->tokens()->create([
+            'name' => $name,
+            'token' => hash('sha256', $plainTextToken),
+            'abilities' => $abilities,
+            'expires_at' => $expiresAt,
+            'team_id' => session('currentTeam')->id
+        ]);
+
+        return new NewAccessToken($token, $token->getKey() . '|' . $plainTextToken);
+    }
     public function teams()
     {
         return $this->belongsToMany(Team::class)->withPivot('role');
@@ -77,14 +98,18 @@ class User extends Authenticatable implements SendsEmail
     }
     public function sendPasswordResetNotification($token): void
     {
-        $this->notify(new TransactionalEmailsResetPassword($token));
+        $this?->notify(new TransactionalEmailsResetPassword($token));
     }
 
     public function isAdmin()
     {
-        return data_get($this->pivot, 'role') === 'admin' || data_get($this->pivot, 'role') === 'owner';
+        return $this->role() === 'admin' || $this->role() === 'owner';
     }
 
+    public function isOwner()
+    {
+        return $this->role() === 'owner';
+    }
     public function isAdminFromSession()
     {
         if (auth()->user()->id === 0) {
@@ -134,6 +159,9 @@ class User extends Authenticatable implements SendsEmail
 
     public function role()
     {
-        return session('currentTeam')->pivot->role;
+        if (data_get($this, 'pivot')) {
+            return $this->pivot->role;
+        }
+        return auth()->user()->teams->where('id', currentTeam()->id)->first()->pivot->role;
     }
 }

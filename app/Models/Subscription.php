@@ -30,8 +30,7 @@ class Subscription extends Model
             if (in_array($subscription, $ultimate)) {
                 return 'ultimate';
             }
-        }
-        if (isStripe()) {
+        } else if (isStripe()) {
             if (!$this->stripe_plan_id) {
                 return 'zero';
             }
@@ -39,19 +38,23 @@ class Subscription extends Model
             if (!$subscription) {
                 return null;
             }
-            $subscriptionPlanId = data_get($subscription,'stripe_plan_id');
+            $subscriptionPlanId = data_get($subscription, 'stripe_plan_id');
             if (!$subscriptionPlanId) {
+                return null;
+            }
+            $subscriptionInvoicePaid = data_get($subscription, 'stripe_invoice_paid');
+            if (!$subscriptionInvoicePaid) {
                 return null;
             }
             $subscriptionConfigs = collect(config('subscription'));
             $stripePlanId = null;
             $subscriptionConfigs->map(function ($value, $key) use ($subscriptionPlanId, &$stripePlanId) {
-                if ($value === $subscriptionPlanId){
+                if ($value === $subscriptionPlanId) {
                     $stripePlanId = $key;
                 };
             })->first();
             if ($stripePlanId) {
-                return Str::of($stripePlanId)->after('stripe_price_id_')->before('_')->lower();
+                return str($stripePlanId)->after('stripe_price_id_')->before('_')->lower();
             }
         }
         return 'zero';

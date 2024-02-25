@@ -2,15 +2,19 @@
 
 namespace App\Console;
 
-use App\Jobs\CheckResaleLicenseJob;
+use App\Jobs\CheckLogDrainContainerJob;
 use App\Jobs\CleanupInstanceStuffsJob;
 use App\Jobs\DatabaseBackupJob;
-use App\Jobs\DockerCleanupJob;
+use App\Jobs\ScheduledTaskJob;
 use App\Jobs\InstanceAutoUpdateJob;
 use App\Jobs\ContainerStatusJob;
+use App\Jobs\PullHelperImageJob;
+use App\Jobs\ServerStatusJob;
 use App\Models\InstanceSettings;
 use App\Models\ScheduledDatabaseBackup;
+use App\Models\ScheduledTask;
 use App\Models\Server;
+use App\Models\Team;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
 
@@ -19,41 +23,58 @@ class Kernel extends ConsoleKernel
     protected function schedule(Schedule $schedule): void
     {
         if (isDev()) {
-            // $schedule->job(new ContainerStatusJob(Server::find(0)))->everyTenMinutes()->onOneServer();
-            // $schedule->command('horizon:snapshot')->everyMinute();
+            // Instance Jobs
+            $schedule->command('horizon:snapshot')->everyMinute();
             $schedule->job(new CleanupInstanceStuffsJob)->everyMinute()->onOneServer();
-            // $schedule->job(new CheckResaleLicenseJob)->hourly();
-            // $schedule->job(new DockerCleanupJob)->everyOddHour();
-            // $this->instance_auto_update($schedule);
-            // $this->check_scheduled_backups($schedule);
+            // $schedule->job(new CheckResaleLicenseJob)->hourly()->onOneServer();
+            // Server Jobs
+            $this->check_scheduled_backups($schedule);
             $this->check_resources($schedule);
-            $this->cleanup_servers($schedule);
+            $this->check_scheduled_backups($schedule);
+            $this->pull_helper_image($schedule);
+            $this->check_scheduled_tasks($schedule);
         } else {
+            // Instance Jobs
             $schedule->command('horizon:snapshot')->everyFiveMinutes();
+            $schedule->command('cleanup:unreachable-servers')->daily();
+
             $schedule->job(new CleanupInstanceStuffsJob)->everyTwoMinutes()->onOneServer();
-            $schedule->job(new CheckResaleLicenseJob)->hourly()->onOneServer();
+            // $schedule->job(new CheckResaleLicenseJob)->hourly()->onOneServer();
+
+            // Server Jobs
             $this->instance_auto_update($schedule);
             $this->check_scheduled_backups($schedule);
             $this->check_resources($schedule);
-            $this->cleanup_servers($schedule);
+            $this->pull_helper_image($schedule);
+            $this->check_scheduled_tasks($schedule);
         }
     }
-    private function cleanup_servers($schedule)
+    private function pull_helper_image($schedule)
     {
-        $servers = Server::all()->where('settings.is_usable', true)->where('settings.is_reachable', true);
+        $servers = Server::all()->where('settings.is_usable', true)->where('settings.is_reachable', true)->where('ip', '!=', '1.2.3.4');
         foreach ($servers as $server) {
-            $schedule->job(new DockerCleanupJob($server))->everyTenMinutes()->onOneServer();
+            $schedule->job(new PullHelperImageJob($server))->everyTenMinutes()->onOneServer();
         }
     }
     private function check_resources($schedule)
     {
         if (isCloud()) {
-            $servers = Server::all()->whereNotNull('team.subscription')->where('team.subscription.stripe_trial_already_ended', false);
+            $servers = Server::all()->whereNotNull('team.subscription')->where('team.subscription.stripe_trial_already_ended', false)->where('ip', '!=', '1.2.3.4');
+            $own = Team::find(0)->servers;
+            $servers = $servers->merge($own);
+            $containerServers = $servers->where('settings.is_swarm_worker', false)->where('settings.is_build_server', false);
         } else {
-            $servers = Server::all();
+            $servers = Server::all()->where('ip', '!=', '1.2.3.4');
+            $containerServers = $servers->where('settings.is_swarm_worker', false)->where('settings.is_build_server', false);
+        }
+        foreach ($containerServers as $server) {
+            $schedule->job(new ContainerStatusJob($server))->everyMinute()->onOneServer();
+            if ($server->isLogDrainEnabled()) {
+                $schedule->job(new CheckLogDrainContainerJob($server))->everyMinute()->onOneServer();
+            }
         }
         foreach ($servers as $server) {
-            $schedule->job(new ContainerStatusJob($server))->everyMinute()->onOneServer();
+            $schedule->job(new ServerStatusJob($server))->everyMinute()->onOneServer();
         }
     }
     private function instance_auto_update($schedule)
@@ -68,10 +89,8 @@ class Kernel extends ConsoleKernel
     }
     private function check_scheduled_backups($schedule)
     {
-        ray('check_scheduled_backups');
         $scheduled_backups = ScheduledDatabaseBackup::all();
         if ($scheduled_backups->isEmpty()) {
-            ray('no scheduled backups');
             return;
         }
         foreach ($scheduled_backups as $scheduled_backup) {
@@ -90,6 +109,31 @@ class Kernel extends ConsoleKernel
             $schedule->job(new DatabaseBackupJob(
                 backup: $scheduled_backup
             ))->cron($scheduled_backup->frequency)->onOneServer();
+        }
+    }
+
+    private function check_scheduled_tasks($schedule)
+    {
+        $scheduled_tasks = ScheduledTask::all();
+        if ($scheduled_tasks->isEmpty()) {
+            return;
+        }
+        foreach ($scheduled_tasks as $scheduled_task) {
+            $service = $scheduled_task->service;
+            $application = $scheduled_task->application;
+
+            if (!$application && !$service) {
+                ray('application/service attached to scheduled task does not exist');
+                $scheduled_task->delete();
+                continue;
+            }
+
+            if (isset(VALID_CRON_STRINGS[$scheduled_task->frequency])) {
+                $scheduled_task->frequency = VALID_CRON_STRINGS[$scheduled_task->frequency];
+            }
+            $schedule->job(new ScheduledTaskJob(
+                task: $scheduled_task
+            ))->cron($scheduled_task->frequency)->onOneServer();
         }
     }
 

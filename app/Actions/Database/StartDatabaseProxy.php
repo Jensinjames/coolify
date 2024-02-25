@@ -2,6 +2,10 @@
 
 namespace App\Actions\Database;
 
+use App\Models\ServiceDatabase;
+use App\Models\StandaloneMariadb;
+use App\Models\StandaloneMongodb;
+use App\Models\StandaloneMysql;
 use App\Models\StandalonePostgresql;
 use App\Models\StandaloneRedis;
 use Lorisleiva\Actions\Concerns\AsAction;
@@ -11,15 +15,53 @@ class StartDatabaseProxy
 {
     use AsAction;
 
-    public function handle(StandaloneRedis|StandalonePostgresql $database)
+    public function handle(StandaloneRedis|StandalonePostgresql|StandaloneMongodb|StandaloneMysql|StandaloneMariadb|ServiceDatabase $database)
     {
         $internalPort = null;
-        if ($database->getMorphClass()=== 'App\Models\StandaloneRedis') {
-            $internalPort = 6379;
-        } else if ($database->getMorphClass()=== 'App\Models\StandalonePostgresql') {
-            $internalPort = 5432;
+        $type = $database->getMorphClass();
+        $network = data_get($database, 'destination.network');
+        $server = data_get($database, 'destination.server');
+        $containerName = data_get($database, 'uuid');
+        $proxyContainerName = "{$database->uuid}-proxy";
+        if ($database->getMorphClass() === 'App\Models\ServiceDatabase') {
+            $databaseType = $database->databaseType();
+            $network = data_get($database, 'service.destination.network');
+            $server = data_get($database, 'service.destination.server');
+            $proxyContainerName = "{$database->service->uuid}-proxy";
+            switch ($databaseType) {
+                case 'standalone-mariadb':
+                    $type = 'App\Models\StandaloneMariadb';
+                    $containerName = "mariadb-{$database->service->uuid}";
+                    break;
+                case 'standalone-mongodb':
+                    $type = 'App\Models\StandaloneMongodb';
+                    $containerName = "mongodb-{$database->service->uuid}";
+                    break;
+                case 'standalone-mysql':
+                    $type = 'App\Models\StandaloneMysql';
+                    $containerName = "mysql-{$database->service->uuid}";
+                    break;
+                case 'standalone-postgresql':
+                    $type = 'App\Models\StandalonePostgresql';
+                    $containerName = "postgresql-{$database->service->uuid}";
+                    break;
+                case 'standalone-redis':
+                    $type = 'App\Models\StandaloneRedis';
+                    $containerName = "redis-{$database->service->uuid}";
+                    break;
+            }
         }
-        $containerName = "{$database->uuid}-proxy";
+        if ($type === 'App\Models\StandaloneRedis') {
+            $internalPort = 6379;
+        } else if ($type === 'App\Models\StandalonePostgresql') {
+            $internalPort = 5432;
+        } else if ($type === 'App\Models\StandaloneMongodb') {
+            $internalPort = 27017;
+        } else if ($type === 'App\Models\StandaloneMysql') {
+            $internalPort = 3306;
+        } else if ($type === 'App\Models\StandaloneMariadb') {
+            $internalPort = 3306;
+        }
         $configuration_dir = database_proxy_dir($database->uuid);
         $nginxconf = <<<EOF
     user  nginx;
@@ -33,7 +75,7 @@ class StartDatabaseProxy
     stream {
        server {
             listen $database->public_port;
-            proxy_pass $database->uuid:$internalPort;
+            proxy_pass $containerName:$internalPort;
        }
     }
     EOF;
@@ -45,19 +87,19 @@ class StartDatabaseProxy
         $docker_compose = [
             'version' => '3.8',
             'services' => [
-                $containerName => [
+                $proxyContainerName => [
                     'build' => [
                         'context' => $configuration_dir,
                         'dockerfile' => 'Dockerfile',
                     ],
                     'image' => "nginx:stable-alpine",
-                    'container_name' => $containerName,
+                    'container_name' => $proxyContainerName,
                     'restart' => RESTART_MODE,
                     'ports' => [
                         "$database->public_port:$database->public_port",
                     ],
                     'networks' => [
-                        $database->destination->network,
+                        $network,
                     ],
                     'healthcheck' => [
                         'test' => [
@@ -72,9 +114,9 @@ class StartDatabaseProxy
                 ]
             ],
             'networks' => [
-                $database->destination->network => [
+                $network => [
                     'external' => true,
-                    'name' => $database->destination->network,
+                    'name' => $network,
                     'attachable' => true,
                 ]
             ]
@@ -87,7 +129,8 @@ class StartDatabaseProxy
             "echo '{$dockerfile_base64}' | base64 -d > $configuration_dir/Dockerfile",
             "echo '{$nginxconf_base64}' | base64 -d > $configuration_dir/nginx.conf",
             "echo '{$dockercompose_base64}' | base64 -d > $configuration_dir/docker-compose.yaml",
-            "docker compose --project-directory {$configuration_dir} up --build -d >/dev/null",
-        ], $database->destination->server);
+            "docker compose --project-directory {$configuration_dir} pull",
+            "docker compose --project-directory {$configuration_dir} up --build -d",
+        ], $server);
     }
 }

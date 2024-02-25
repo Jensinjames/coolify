@@ -2,6 +2,9 @@
 
 use App\Models\Server;
 use App\Models\StandaloneDocker;
+use App\Models\StandaloneMariadb;
+use App\Models\StandaloneMongodb;
+use App\Models\StandaloneMysql;
 use App\Models\StandalonePostgresql;
 use App\Models\StandaloneRedis;
 use Visus\Cuid2\Cuid2;
@@ -21,7 +24,7 @@ function create_standalone_postgresql($environment_id, $destination_uuid): Stand
     }
     return StandalonePostgresql::create([
         'name' => generate_database_name('postgresql'),
-        'postgres_password' => \Illuminate\Support\Str::password(symbols: false),
+        'postgres_password' => \Illuminate\Support\Str::password(length: 64, symbols: false),
         'environment_id' => $environment_id,
         'destination_id' => $destination->id,
         'destination_type' => $destination->getMorphClass(),
@@ -36,7 +39,52 @@ function create_standalone_redis($environment_id, $destination_uuid): Standalone
     }
     return StandaloneRedis::create([
         'name' => generate_database_name('redis'),
-        'redis_password' => \Illuminate\Support\Str::password(symbols: false),
+        'redis_password' => \Illuminate\Support\Str::password(length: 64, symbols: false),
+        'environment_id' => $environment_id,
+        'destination_id' => $destination->id,
+        'destination_type' => $destination->getMorphClass(),
+    ]);
+}
+
+function create_standalone_mongodb($environment_id, $destination_uuid): StandaloneMongodb
+{
+    $destination = StandaloneDocker::where('uuid', $destination_uuid)->first();
+    if (!$destination) {
+        throw new Exception('Destination not found');
+    }
+    return StandaloneMongodb::create([
+        'name' => generate_database_name('mongodb'),
+        'mongo_initdb_root_password' => \Illuminate\Support\Str::password(length: 64, symbols: false),
+        'environment_id' => $environment_id,
+        'destination_id' => $destination->id,
+        'destination_type' => $destination->getMorphClass(),
+    ]);
+}
+function create_standalone_mysql($environment_id, $destination_uuid): StandaloneMysql
+{
+    $destination = StandaloneDocker::where('uuid', $destination_uuid)->first();
+    if (!$destination) {
+        throw new Exception('Destination not found');
+    }
+    return StandaloneMysql::create([
+        'name' => generate_database_name('mysql'),
+        'mysql_root_password' => \Illuminate\Support\Str::password(length: 64, symbols: false),
+        'mysql_password' => \Illuminate\Support\Str::password(length: 64, symbols: false),
+        'environment_id' => $environment_id,
+        'destination_id' => $destination->id,
+        'destination_type' => $destination->getMorphClass(),
+    ]);
+}
+function create_standalone_mariadb($environment_id, $destination_uuid): StandaloneMariadb
+{
+    $destination = StandaloneDocker::where('uuid', $destination_uuid)->first();
+    if (!$destination) {
+        throw new Exception('Destination not found');
+    }
+    return StandaloneMariadb::create([
+        'name' => generate_database_name('mariadb'),
+        'mariadb_root_password' => \Illuminate\Support\Str::password(length: 64, symbols: false),
+        'mariadb_password' => \Illuminate\Support\Str::password(length: 64, symbols: false),
         'environment_id' => $environment_id,
         'destination_id' => $destination->id,
         'destination_type' => $destination->getMorphClass(),

@@ -18,7 +18,7 @@ class Project extends BaseModel
                 'project_id' => $project->id,
             ]);
             Environment::create([
-                'name' => 'Production',
+                'name' => 'production',
                 'project_id' => $project->id,
             ]);
         });
@@ -27,7 +27,9 @@ class Project extends BaseModel
             $project->settings()->delete();
         });
     }
-
+    public function environment_variables() {
+        return $this->hasMany(SharedEnvironmentVariable::class);
+    }
     public function environments()
     {
         return $this->hasMany(Environment::class);
@@ -55,5 +57,20 @@ class Project extends BaseModel
     public function redis()
     {
         return $this->hasManyThrough(StandaloneRedis::class, Environment::class);
+    }
+    public function mongodbs()
+    {
+        return $this->hasManyThrough(StandaloneMongodb::class, Environment::class);
+    }
+    public function mysqls()
+    {
+        return $this->hasManyThrough(StandaloneMysql::class, Environment::class);
+    }
+    public function mariadbs()
+    {
+        return $this->hasManyThrough(StandaloneMariadb::class, Environment::class);
+    }
+    public function resource_count() {
+        return $this->applications()->count() + $this->postgresqls()->count() + $this->redis()->count() + $this->mongodbs()->count() + $this->mysqls()->count() + $this->mariadbs()->count();
     }
 }

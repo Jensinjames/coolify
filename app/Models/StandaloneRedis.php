@@ -5,10 +5,11 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class StandaloneRedis extends BaseModel
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
     protected $guarded = [];
 
     protected static function booted()
@@ -26,12 +27,78 @@ class StandaloneRedis extends BaseModel
         static::deleting(function ($database) {
             $database->scheduledBackups()->delete();
             $storages = $database->persistentStorages()->get();
-            foreach ($storages as $storage) {
-                instant_remote_process(["docker volume rm -f $storage->name"], $database->destination->server, false);
+            $server = data_get($database, 'destination.server');
+            if ($server) {
+                foreach ($storages as $storage) {
+                    instant_remote_process(["docker volume rm -f $storage->name"], $server, false);
+                }
             }
             $database->persistentStorages()->delete();
             $database->environment_variables()->delete();
+            $database->tags()->detach();
         });
+    }
+    public function realStatus()
+    {
+        return $this->getRawOriginal('status');
+    }
+    public function status(): Attribute
+    {
+        return Attribute::make(
+            set: function ($value) {
+                if (str($value)->contains('(')) {
+                    $status = str($value)->before('(')->trim()->value();
+                    $health = str($value)->after('(')->before(')')->trim()->value() ?? 'unhealthy';
+                } else if (str($value)->contains(':')) {
+                    $status = str($value)->before(':')->trim()->value();
+                    $health = str($value)->after(':')->trim()->value() ?? 'unhealthy';
+                } else {
+                    $status = $value;
+                    $health = 'unhealthy';
+                }
+                return "$status:$health";
+            },
+            get: function ($value) {
+                if (str($value)->contains('(')) {
+                    $status = str($value)->before('(')->trim()->value();
+                    $health = str($value)->after('(')->before(')')->trim()->value() ?? 'unhealthy';
+                } else if (str($value)->contains(':')) {
+                    $status = str($value)->before(':')->trim()->value();
+                    $health = str($value)->after(':')->trim()->value() ?? 'unhealthy';
+                } else {
+                    $status = $value;
+                    $health = 'unhealthy';
+                }
+                return "$status:$health";
+            },
+        );
+    }
+    public function tags()
+    {
+        return $this->morphToMany(Tag::class, 'taggable');
+    }
+    public function project()
+    {
+        return data_get($this, 'environment.project');
+    }
+    public function team()
+    {
+        return data_get($this, 'environment.project.team');
+    }
+    public function link()
+    {
+        if (data_get($this, 'environment.project.uuid')) {
+            return route('project.database.configuration', [
+                'project_uuid' => data_get($this, 'environment.project.uuid'),
+                'environment_name' => data_get($this, 'environment.name'),
+                'database_uuid' => data_get($this, 'uuid')
+            ]);
+        }
+        return null;
+    }
+    public function isLogDrainEnabled()
+    {
+        return data_get($this, 'is_log_drain_enabled', false);
     }
 
     public function portsMappings(): Attribute
@@ -40,8 +107,6 @@ class StandaloneRedis extends BaseModel
             set: fn ($value) => $value === "" ? null : $value,
         );
     }
-
-    // Normal Deployments
 
     public function portsMappingsArray(): Attribute
     {
@@ -56,6 +121,14 @@ class StandaloneRedis extends BaseModel
     public function type(): string
     {
         return 'standalone-redis';
+    }
+    public function getDbUrl(bool $useInternal = false): string
+    {
+        if ($this->is_public && !$useInternal) {
+            return "redis://:{$this->redis_password}@{$this->destination->server->getIp}:{$this->public_port}/0";
+        } else {
+            return "redis://:{$this->redis_password}@{$this->uuid}:6379/0";
+        }
     }
 
     public function environment()

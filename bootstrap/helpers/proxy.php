@@ -1,7 +1,10 @@
 <?php
 
 use App\Actions\Proxy\SaveConfiguration;
+use App\Models\Application;
+use App\Models\InstanceSettings;
 use App\Models\Server;
+use Spatie\Url\Url;
 use Symfony\Component\Yaml\Yaml;
 
 function get_proxy_path()
@@ -12,36 +15,96 @@ function get_proxy_path()
 }
 function connectProxyToNetworks(Server $server)
 {
-    $networks = collect($server->standaloneDockers)->map(function ($docker) {
-        return $docker['network'];
-    })->unique();
-    if ($networks->count() === 0) {
-        $networks = collect(['coolify']);
+    if ($server->isSwarm()) {
+        $networks = collect($server->swarmDockers)->map(function ($docker) {
+            return $docker['network'];
+        });
+    } else {
+        // Standalone networks
+        $networks = collect($server->standaloneDockers)->map(function ($docker) {
+            return $docker['network'];
+        });
     }
-    $commands = $networks->map(function ($network) {
-        return [
-            "echo 'Connecting coolify-proxy to $network network...'",
-            "docker network ls --format '{{.Name}}' | grep '^$network$' >/dev/null || docker network create --attachable $network >/dev/null",
-            "docker network connect $network coolify-proxy >/dev/null 2>&1 || true",
-        ];
-    });
+    // Service networks
+    foreach ($server->services()->get() as $service) {
+        $networks->push($service->networks());
+    }
+    // Docker compose based apps
+    $docker_compose_apps = $server->dockerComposeBasedApplications();
+    foreach ($docker_compose_apps as $app) {
+        $networks->push($app->uuid);
+    }
+    // Docker compose based preview deployments
+    $docker_compose_previews = $server->dockerComposeBasedPreviewDeployments();
+    foreach ($docker_compose_previews as $preview) {
+        $pullRequestId = $preview->pull_request_id;
+        $applicationId = $preview->application_id;
+        $application = Application::find($applicationId);
+        if (!$application) {
+            continue;
+        }
+        $network = "{$application->uuid}-{$pullRequestId}";
+        $networks->push($network);
+    }
+    $networks = collect($networks)->flatten()->unique();
+    if ($server->isSwarm()) {
+        if ($networks->count() === 0) {
+            $networks = collect(['coolify-overlay']);
+        }
+        $commands = $networks->map(function ($network) {
+            return [
+                "echo 'Connecting coolify-proxy to $network network...'",
+                "docker network ls --format '{{.Name}}' | grep '^$network$' >/dev/null || docker network create --driver overlay --attachable $network >/dev/null",
+                "docker network connect $network coolify-proxy >/dev/null 2>&1 || true",
+            ];
+        });
+    } else {
+        if ($networks->count() === 0) {
+            $networks = collect(['coolify']);
+        }
+        $commands = $networks->map(function ($network) {
+            return [
+                "echo 'Connecting coolify-proxy to $network network...'",
+                "docker network ls --format '{{.Name}}' | grep '^$network$' >/dev/null || docker network create --attachable $network >/dev/null",
+                "docker network connect $network coolify-proxy >/dev/null 2>&1 || true",
+            ];
+        });
+    }
+
     return $commands->flatten();
 }
 function generate_default_proxy_configuration(Server $server)
 {
     $proxy_path = get_proxy_path();
-    $networks = collect($server->standaloneDockers)->map(function ($docker) {
-        return $docker['network'];
-    })->unique();
-    if ($networks->count() === 0) {
-        $networks = collect(['coolify']);
+    if ($server->isSwarm()) {
+        $networks = collect($server->swarmDockers)->map(function ($docker) {
+            return $docker['network'];
+        })->unique();
+        if ($networks->count() === 0) {
+            $networks = collect(['coolify-overlay']);
+        }
+    } else {
+        $networks = collect($server->standaloneDockers)->map(function ($docker) {
+            return $docker['network'];
+        })->unique();
+        if ($networks->count() === 0) {
+            $networks = collect(['coolify']);
+        }
     }
+
     $array_of_networks = collect([]);
     $networks->map(function ($network) use ($array_of_networks) {
         $array_of_networks[$network] = [
             "external" => true,
         ];
     });
+    $labels = [
+        "traefik.enable=true",
+        "traefik.http.routers.traefik.entrypoints=http",
+        "traefik.http.routers.traefik.service=api@internal",
+        "traefik.http.services.traefik.loadbalancer.server.port=8080",
+        "coolify.managed=true",
+    ];
     $config = [
         "version" => "3.8",
         "networks" => $array_of_networks->toArray(),
@@ -77,8 +140,9 @@ function generate_default_proxy_configuration(Server $server)
                     "--entrypoints.http.address=:80",
                     "--entrypoints.https.address=:443",
                     "--entrypoints.http.http.encodequerysemicolons=true",
+                    "--entryPoints.http.http2.maxConcurrentStreams=50",
                     "--entrypoints.https.http.encodequerysemicolons=true",
-                    "--providers.docker=true",
+                    "--entryPoints.https.http2.maxConcurrentStreams=50",
                     "--providers.docker.exposedbydefault=false",
                     "--providers.file.directory=/traefik/dynamic/",
                     "--providers.file.watch=true",
@@ -86,29 +150,162 @@ function generate_default_proxy_configuration(Server $server)
                     "--certificatesresolvers.letsencrypt.acme.storage=/traefik/acme.json",
                     "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=http",
                 ],
-                "labels" => [
-                    "traefik.enable=true",
-                    "traefik.http.routers.traefik.entrypoints=http",
-                    "traefik.http.routers.traefik.middlewares=traefik-basic-auth@file",
-                    "traefik.http.routers.traefik.service=api@internal",
-                    "traefik.http.services.traefik.loadbalancer.server.port=8080",
-                    // Global Middlewares
-                    "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https",
-                    "traefik.http.middlewares.gzip.compress=true",
-                ],
+                "labels" => $labels,
             ],
         ],
     ];
     if (isDev()) {
-        $config['services']['traefik']['command'][] = "--log.level=debug";
+        // $config['services']['traefik']['command'][] = "--log.level=debug";
         $config['services']['traefik']['command'][] = "--accesslog.filepath=/traefik/access.log";
         $config['services']['traefik']['command'][] = "--accesslog.bufferingsize=100";
     }
-    $config = Yaml::dump($config, 4, 2);
+    if ($server->isSwarm()) {
+        data_forget($config, 'services.traefik.container_name');
+        data_forget($config, 'services.traefik.restart');
+        data_forget($config, 'services.traefik.labels');
+
+        $config['services']['traefik']['command'][] = "--providers.docker.swarmMode=true";
+        $config['services']['traefik']['deploy'] = [
+            "labels" => $labels,
+            "placement" => [
+                "constraints" => [
+                    "node.role==manager",
+                ],
+            ],
+        ];
+    } else {
+        $config['services']['traefik']['command'][] = "--providers.docker=true";
+    }
+    $config = Yaml::dump($config, 12, 2);
     SaveConfiguration::run($server, $config);
     return $config;
 }
+function setup_dynamic_configuration()
+{
+    $dynamic_config_path = get_proxy_path() . "/dynamic";
+    $settings = InstanceSettings::get();
+    $server = Server::find(0);
+    if ($server) {
+        $file = "$dynamic_config_path/coolify.yaml";
+        if (empty($settings->fqdn)) {
+            instant_remote_process([
+                "rm -f $file",
+            ], $server);
+        } else {
+            $url = Url::fromString($settings->fqdn);
+            $host = $url->getHost();
+            $schema = $url->getScheme();
+            $traefik_dynamic_conf = [
+                'http' =>
+                [
+                    'middlewares' => [
+                        'redirect-to-https' => [
+                            'redirectscheme' => [
+                                'scheme' => 'https',
+                            ],
+                        ],
+                        'gzip' => [
+                            'compress' => true,
+                        ],
+                    ],
+                    'routers' =>
+                    [
+                        'coolify-http' =>
+                        [
+                            'middlewares' => [
+                                0 => 'gzip',
+                            ],
+                            'entryPoints' => [
+                                0 => 'http',
+                            ],
+                            'service' => 'coolify',
+                            'rule' => "Host(`{$host}`)",
+                        ],
+                        'coolify-realtime-ws' =>
+                        [
+                            'entryPoints' => [
+                                0 => 'http',
+                            ],
+                            'service' => 'coolify-realtime',
+                            'rule' => "Host(`{$host}`) && PathPrefix(`/app`)",
+                        ],
+                    ],
+                    'services' =>
+                    [
+                        'coolify' =>
+                        [
+                            'loadBalancer' =>
+                            [
+                                'servers' =>
+                                [
+                                    0 =>
+                                    [
+                                        'url' => 'http://coolify:80',
+                                    ],
+                                ],
+                            ],
+                        ],
+                        'coolify-realtime' =>
+                        [
+                            'loadBalancer' =>
+                            [
+                                'servers' =>
+                                [
+                                    0 =>
+                                    [
+                                        'url' => 'http://coolify-realtime:6001',
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ];
 
+            if ($schema === 'https') {
+                $traefik_dynamic_conf['http']['routers']['coolify-http']['middlewares'] = [
+                    0 => 'redirect-to-https',
+                ];
+
+                $traefik_dynamic_conf['http']['routers']['coolify-https'] = [
+                    'entryPoints' => [
+                        0 => 'https',
+                    ],
+                    'service' => 'coolify',
+                    'rule' => "Host(`{$host}`)",
+                    'tls' => [
+                        'certresolver' => 'letsencrypt',
+                    ],
+                ];
+                $traefik_dynamic_conf['http']['routers']['coolify-realtime-wss'] = [
+                    'entryPoints' => [
+                        0 => 'https',
+                    ],
+                    'service' => 'coolify-realtime',
+                    'rule' => "Host(`{$host}`) && PathPrefix(`/app`)",
+                    'tls' => [
+                        'certresolver' => 'letsencrypt',
+                    ],
+                ];
+            }
+            $yaml = Yaml::dump($traefik_dynamic_conf, 12, 2);
+            $yaml =
+                "# This file is automatically generated by Coolify.\n" .
+                "# Do not edit it manually (only if you know what are you doing).\n\n" .
+                $yaml;
+
+            $base64 = base64_encode($yaml);
+            instant_remote_process([
+                "mkdir -p $dynamic_config_path",
+                "echo '$base64' | base64 -d > $file",
+            ], $server);
+
+            if (config('app.env') == 'local') {
+                // ray($yaml);
+            }
+        }
+    }
+}
 function setup_default_redirect_404(string|null $redirect_url, Server $server)
 {
     $traefik_dynamic_conf_path = get_proxy_path() . "/dynamic";

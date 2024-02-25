@@ -26,7 +26,7 @@ class ApplicationSeeder extends Seeder
             'environment_id' => 1,
             'destination_id' => 0,
             'destination_type' => StandaloneDocker::class,
-            'source_id' => 0,
+            'source_id' => 1,
             'source_type' => GithubApp::class
         ]);
         Application::create([
@@ -37,7 +37,7 @@ class ApplicationSeeder extends Seeder
             'git_repository' => 'coollabsio/coolify-examples',
             'git_branch' => 'dockerfile',
             'build_pack' => 'dockerfile',
-            'ports_exposes' => '3000',
+            'ports_exposes' => '80',
             'environment_id' => 1,
             'destination_id' => 0,
             'destination_type' => StandaloneDocker::class,

@@ -2,10 +2,16 @@
 @section('body')
     @parent
     <x-navbar />
-    <div class="fixed z-50 top-[4.5rem] left-4" id="vue">
-        <magic-bar></magic-bar>
-    </div>
-    <main class="main max-w-screen-2xl">
+    @persist('magic-bar')
+        <div class="fixed z-30 top-[4.5rem] left-4" id="vue">
+            <magic-bar></magic-bar>
+        </div>
+    @endpersist
+    <livewire:sponsorship />
+    @auth
+        <livewire:realtime-connection />
+    @endauth
+    <main class="pb-10 main">
         {{ $slot }}
     </main>
 @endsection

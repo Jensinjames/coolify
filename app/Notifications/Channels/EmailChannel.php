@@ -14,8 +14,8 @@ class EmailChannel
     {
         try {
             $this->bootConfigs($notifiable);
-            $recepients = $notifiable->getRecepients($notification);
-            if (count($recepients) === 0) {
+            $recipients = $notifiable->getRecepients($notification);
+            if (count($recipients) === 0) {
                 throw new Exception('No email recipients found');
             }
 
@@ -24,13 +24,24 @@ class EmailChannel
                 [],
                 [],
                 fn (Message $message) => $message
-                    ->to($recepients)
+                    ->to($recipients)
                     ->subject($mailMessage->subject)
                     ->html((string)$mailMessage->render())
             );
         } catch (Exception $e) {
+            $error = $e->getMessage();
+            if ($error === 'No email settings found.') {
+                throw $e;
+            }
             ray($e->getMessage());
-            send_internal_notification("EmailChannel error: {$e->getMessage()}. Failed to send email to: " . implode(', ', $recepients) . " with subject: {$mailMessage->subject}");
+            $message = "EmailChannel error: {$e->getMessage()}. Failed to send email to:";
+            if (isset($recipients)) {
+                $message .= implode(', ', $recipients);
+            }
+            if (isset($mailMessage)) {
+                $message .= " with subject: {$mailMessage->subject}";
+            }
+            send_internal_notification($message);
             throw $e;
         }
     }
@@ -44,8 +55,8 @@ class EmailChannel
             }
             return;
         }
-        config()->set('mail.from.address', data_get($notifiable, 'smtp_from_address'));
-        config()->set('mail.from.name', data_get($notifiable, 'smtp_from_name'));
+        config()->set('mail.from.address', data_get($notifiable, 'smtp_from_address', 'test@example.com'));
+        config()->set('mail.from.name', data_get($notifiable, 'smtp_from_name', 'Test'));
         if (data_get($notifiable, 'resend_enabled')) {
             config()->set('mail.default', 'resend');
             config()->set('resend.api_key', data_get($notifiable, 'resend_api_key'));

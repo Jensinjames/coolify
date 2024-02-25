@@ -5,7 +5,8 @@
             <h1 class="text-5xl font-bold">Welcome to Coolify</h1>
             <p class="py-6 text-xl text-center">Let me help you to set the basics.</p>
             <div class="flex justify-center ">
-                <x-forms.button class="justify-center box" wire:click="$set('currentState','explanation')">Get Started
+                <x-forms.button class="justify-center w-64 box" wire:click="$set('currentState','explanation')">Get
+                    Started
                 </x-forms.button>
             </div>
         @endif
@@ -31,7 +32,7 @@
                         Telegram, Email, etc.) when something goes wrong, or an action needed from your side.</p>
                 </x-slot:explanation>
                 <x-slot:actions>
-                    <x-forms.button class="justify-center box" wire:click="explanation">Next
+                    <x-forms.button class="justify-center w-64 box" wire:click="explanation">Next
                     </x-forms.button>
                 </x-slot:actions>
             </x-boarding-step>
@@ -43,11 +44,11 @@
                     or on a <x-highlighted text="Remote Server" />?
                 </x-slot:question>
                 <x-slot:actions>
-                    <x-forms.button class="justify-center box" wire:target="setServerType('localhost')"
+                    <x-forms.button class="justify-center w-64 box" wire:target="setServerType('localhost')"
                         wire:click="setServerType('localhost')">Localhost
                     </x-forms.button>
 
-                    <x-forms.button class="justify-center box" wire:target="setServerType('remote')"
+                    <x-forms.button class="justify-center w-64 box " wire:target="setServerType('remote')"
                         wire:click="setServerType('remote')">Remote Server
                     </x-forms.button>
                     @if (!$serverReachable)
@@ -56,8 +57,11 @@
                         Please make sure you have the correct public key in your ~/.ssh/authorized_keys file for user
                         'root' or skip the boarding process and add a new private key manually to Coolify and to the
                         server.
+                        <br />
+                        Check this <a target="_blank" class="underline"
+                            href="https://coolify.io/docs/server/openssh">documentation</a> for further help.
                         <x-forms.input readonly id="serverPublicKey"></x-forms.input>
-                        <x-forms.button class="box" wire:target="setServerType('localhost')"
+                        <x-forms.button class="w-64 box" wire:target="setServerType('localhost')"
                             wire:click="setServerType('localhost')">Check again
                         </x-forms.button>
                     @endif
@@ -67,7 +71,7 @@
                         services, called resources. Any CPU intensive process will use the server's CPU where you
                         are deploying your resources.</p>
                     <p>Localhost is the server where Coolify is running on. It is not recommended to use one server
-                        for everyting.</p>
+                        for everything.</p>
                     <p>Remote Server is a server reachable through SSH. It can be hosted at home, or from any cloud
                         provider.</p>
                 </x-slot:explanation>
@@ -81,14 +85,14 @@
                     Do you have your own SSH Private Key?
                 </x-slot:question>
                 <x-slot:actions>
-                    <x-forms.button class="justify-center box" wire:target="setPrivateKey('own')"
+                    <x-forms.button class="justify-center w-64 box" wire:target="setPrivateKey('own')"
                         wire:click="setPrivateKey('own')">Yes
                     </x-forms.button>
-                    <x-forms.button class="justify-center box" wire:target="setPrivateKey('create')"
+                    <x-forms.button class="justify-center w-64 box" wire:target="setPrivateKey('create')"
                         wire:click="setPrivateKey('create')">No (create one for me)
                     </x-forms.button>
                     @if (count($privateKeys) > 0)
-                        <form wire:submit.prevent='selectExistingPrivateKey' class="flex flex-col w-full gap-4 pr-10">
+                        <form wire:submit='selectExistingPrivateKey' class="flex flex-col w-full gap-4 pr-10">
                             <x-forms.select label="Existing SSH Keys" id='selectedExistingPrivateKey'>
                                 @foreach ($privateKeys as $privateKey)
                                     <option wire:key="{{ $loop->index }}" value="{{ $privateKey->id }}">
@@ -117,30 +121,36 @@
                     There are already servers available for your Team. Do you want to use one of them?
                 </x-slot:question>
                 <x-slot:actions>
-                    <x-forms.button class="justify-center box" wire:click="createNewServer">No (create one for me)
-                    </x-forms.button>
-                    <div>
-                        <form wire:submit.prevent='selectExistingServer' class="flex flex-col w-full gap-4 lg:w-96">
-                            <x-forms.select label="Existing servers" class="w-96" id='selectedExistingServer'>
-                                @foreach ($servers as $server)
-                                    <option wire:key="{{ $loop->index }}" value="{{ $server->id }}">
-                                        {{ $server->name }}</option>
-                                @endforeach
-                            </x-forms.select>
-                            <x-forms.button type="submit">Use this Server</x-forms.button>
-                        </form>
+                    <div class="flex flex-col gap-4">
+                        <div>
+                            <x-forms.button class="justify-center w-64 box" wire:click="createNewServer">No (create one
+                                for
+                                me)
+                            </x-forms.button>
+                        </div>
+                        <div>
+                            <form wire:submit='selectExistingServer' class="flex flex-col w-full gap-4 lg:w-96">
+                                <x-forms.select label="Existing servers" class="w-96" id='selectedExistingServer'>
+                                    @foreach ($servers as $server)
+                                        <option wire:key="{{ $loop->index }}" value="{{ $server->id }}">
+                                            {{ $server->name }}</option>
+                                    @endforeach
+                                </x-forms.select>
+                                <x-forms.button type="submit">Use this Server</x-forms.button>
+                            </form>
+                        </div>
                     </div>
                     @if (!$serverReachable)
-                    This server is not reachable with the following public key.
-                    <br /> <br />
-                    Please make sure you have the correct public key in your ~/.ssh/authorized_keys file for user
-                    'root' or skip the boarding process and add a new private key manually to Coolify and to the
-                    server.
-                    <x-forms.input readonly id="serverPublicKey"></x-forms.input>
-                    <x-forms.button class="box" wire:target="validateServer"
-                        wire:click="validateServer">Check again
-                    </x-forms.button>
-                @endif
+                        This server is not reachable with the following public key.
+                        <br /> <br />
+                        Please make sure you have the correct public key in your ~/.ssh/authorized_keys file for user
+                        'root' or skip the boarding process and add a new private key manually to Coolify and to the
+                        server.
+                        <x-forms.input readonly id="serverPublicKey"></x-forms.input>
+                        <x-forms.button class="w-64 box" wire:target="validateServer" wire:click="validateServer">Check
+                            again
+                        </x-forms.button>
+                    @endif
                 </x-slot:actions>
                 <x-slot:explanation>
                     <p>Private Keys are used to connect to a remote server through a secure shell, called SSH.</p>
@@ -159,7 +169,7 @@
                     Please let me know your key details.
                 </x-slot:question>
                 <x-slot:actions>
-                    <form wire:submit.prevent='savePrivateKey' class="flex flex-col w-full gap-4 pr-10">
+                    <form wire:submit='savePrivateKey' class="flex flex-col w-full gap-4 pr-10">
                         <x-forms.input required placeholder="Choose a name for your Private Key. Could be anything."
                             label="Name" id="privateKeyName" />
                         <x-forms.input placeholder="Description, so others will know more about this."
@@ -192,7 +202,7 @@
                     Please let me know your server details.
                 </x-slot:question>
                 <x-slot:actions>
-                    <form wire:submit.prevent='saveServer' class="flex flex-col w-full gap-4 pr-10">
+                    <form wire:submit='saveServer' class="flex flex-col w-full gap-4 pr-10">
                         <div class="flex gap-2">
                             <x-forms.input required placeholder="Choose a name for your Server. Could be anything."
                                 label="Name" id="remoteServerName" />
@@ -200,15 +210,19 @@
                                 label="Description" id="remoteServerDescription" />
                         </div>
                         <div class="flex gap-2">
-                            <x-forms.input required placeholder="127.0.0.1" label="IP Address"
-                                id="remoteServerHost" />
+                            <x-forms.input required placeholder="127.0.0.1" label="IP Address" id="remoteServerHost" />
                             <x-forms.input required placeholder="Port number of your server. Default is 22."
                                 label="Port" id="remoteServerPort" />
                             <x-forms.input required readonly
                                 placeholder="Username to connect to your server. Default is root." label="Username"
                                 id="remoteServerUser" />
                         </div>
-                        <x-forms.button type="submit">Check Connection</x-forms.button>
+                        <div class="w-64">
+                            <x-forms.checkbox
+                                helper="If you are using Cloudflare Tunnels, enable this. It will proxy all ssh requests to your server through Cloudflare.<br><span class='text-warning'>Coolify does not install/setup Cloudflare (cloudflared) on your server.</span>"
+                                id="isCloudflareTunnel" label="Cloudflare Tunnel" />
+                        </div>
+                        <x-forms.button type="submit">Continue</x-forms.button>
                     </form>
                 </x-slot:actions>
                 <x-slot:explanation>
@@ -219,28 +233,35 @@
         @endif
     </div>
     <div>
-        @if ($currentState === 'install-docker')
-            <x-boarding-step title="Install Docker">
+        @if ($currentState === 'validate-server')
+            <x-boarding-step title="Validate & Configure Server">
                 <x-slot:question>
-                    Could not find Docker Engine on your server. Do you want me to install it for you?
+                    I need to validate your server (connection, Docker Engine, etc) and configure if something is
+                    missing for me. Are you okay with this?
                 </x-slot:question>
                 <x-slot:actions>
-                    @if ($dockerInstallationStarted)
-                    <x-forms.button class="justify-center box" wire:click="installDocker"
-                        onclick="installDocker.showModal()">
-                        Let's do it!</x-forms.button>
-                        <x-forms.button class="justify-center box" wire:click="dockerInstalledOrSkipped">
-                            Next</x-forms.button>
-                    @endif
+                    <x-slide-over closeWithX fullScreen>
+                        <x-slot:title>Validate & configure</x-slot:title>
+                        <x-slot:content>
+                            <livewire:server.validate-and-install :server="$this->createdServer" />
+                        </x-slot:content>
+                        <x-forms.button @click="slideOverOpen=true" class="font-bold box w-96"
+                            wire:click.prevent='installServer' isHighlighted>
+                            Let's do it!
+                        </x-forms.button>
+                    </x-slide-over>
                 </x-slot:actions>
                 <x-slot:explanation>
                     <p>This will install the latest Docker Engine on your server, configure a few things to be able
-                        to run optimal.</p>
+                        to run optimal.<br><br>Minimum Docker Engine version is: 22<br><br>To manually install Docker
+                        Engine, check <a target="_blank" class="underline text-warning"
+                            href="https://docs.docker.com/engine/install/#server">this
+                            documentation</a>.</p>
                 </x-slot:explanation>
             </x-boarding-step>
         @endif
     </div>
-    <div>
+    {{-- <div>
         @if ($currentState === 'select-proxy')
             <x-boarding-step title="Select a Proxy">
                 <x-slot:question>
@@ -267,7 +288,7 @@
                 </x-slot:explanation>
             </x-boarding-step>
         @endif
-    </div>
+    </div> --}}
     <div>
         @if ($currentState === 'create-project')
             <x-boarding-step title="Project">
@@ -280,12 +301,11 @@
                     @endif
                 </x-slot:question>
                 <x-slot:actions>
-                    <x-forms.button class="justify-center box" wire:click="createNewProject">Let's create a new
+                    <x-forms.button class="justify-center w-64 box" wire:click="createNewProject">Let's create a new
                         one!</x-forms.button>
                     <div>
                         @if (count($projects) > 0)
-                            <form wire:submit.prevent='selectExistingProject'
-                                class="flex flex-col w-full gap-4 lg:w-96">
+                            <form wire:submit='selectExistingProject' class="flex flex-col w-full gap-4 lg:w-96">
                                 <x-forms.select label="Existing projects" class="w-96"
                                     id='selectedExistingProject'>
                                     @foreach ($projects as $project)
@@ -314,7 +334,7 @@
                     I will redirect you to the new resource page, where you can create your first resource.
                 </x-slot:question>
                 <x-slot:actions>
-                    <div class="justify-center box" wire:click="showNewResource">Let's do
+                    <div class="items-center justify-center w-64 box" wire:click="showNewResource">Let's do
                         it!</div>
                 </x-slot:actions>
                 <x-slot:explanation>
